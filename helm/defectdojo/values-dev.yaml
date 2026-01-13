@@ -1,0 +1,81 @@
+# PoC dev values for DefectDojo Community Edition
+# Secrets are injected by the pipeline via --set-string (do not put secrets here).
+
+# Primary hostname (used by ingress and allowed hosts)
+host: defectdojo.<YOUR_DOMAIN>
+
+# Full external URL (affects links in notifications/integrations)
+siteUrl: "https://defectdojo.<YOUR_DOMAIN>"
+
+admin:
+  user: admin
+  password: ""   # injected by pipeline: DD_ADMIN_PASSWORD
+  secretKey: ""  # injected by pipeline: DD_SECRET_KEY
+
+django:
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations: {}
+    # For PoC, leave TLS disabled unless you have a cert/secret ready.
+    activateTLS: false
+    secretName: defectdojo-tls
+
+  # Media persistence (uploads)
+  mediaPersistentVolume:
+    enabled: true
+    name: media
+    type: pvc
+    persistentVolumeClaim:
+      create: true
+      name: ""
+      size: 10Gi
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: "" # set if your cluster requires a specific class
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+nginx:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+celery:
+  worker:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  beat:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+# PostgreSQL (Bitnami) - enabled with persistence
+postgresql:
+  enabled: true
+  auth:
+    password: "" # injected by pipeline: DD_DB_PASSWORD
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: "" # set if your cluster requires a specific class

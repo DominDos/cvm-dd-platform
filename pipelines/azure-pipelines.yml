@@ -1,0 +1,118 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - "*"
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+- group: "VG-DEFECTDOJO-SECRETS" # TODO: replace (must provide DD_ADMIN_PASSWORD, DD_SECRET_KEY, DD_DB_PASSWORD)
+
+- name: K8S_SERVICE_CONNECTION
+  value: "SC-K8S" # TODO: replace
+
+- name: DD_NAMESPACE
+  value: defectdojo
+
+- name: DD_RELEASE_NAME
+  value: defectdojo
+
+- name: DD_HOST
+  value: "defectdojo.<YOUR_DOMAIN>" # TODO: replace
+
+- name: DD_CHART
+  value: "oci://us-docker.pkg.dev/os-public-container-registry/defectdojo/defectdojo"
+
+- name: DD_CHART_VERSION
+  value: "1.9.7"
+
+- name: DD_BASE_URL
+  value: "https://defectdojo.<YOUR_DOMAIN>" # TODO: replace
+
+stages:
+- stage: Deploy
+  displayName: Deploy
+  jobs:
+  - job: Deploy
+    displayName: Helm deploy DefectDojo
+    steps:
+    - checkout: self
+
+    - task: KubectlInstaller@0
+      displayName: Install kubectl
+      inputs:
+        kubectlVersion: latest
+
+    - task: HelmInstaller@1
+      displayName: Install Helm
+      inputs:
+        helmVersionToInstall: latest
+
+    - task: Kubernetes@1
+      displayName: Login to cluster
+      inputs:
+        connectionType: Kubernetes Service Connection
+        kubernetesServiceEndpoint: $(K8S_SERVICE_CONNECTION)
+        command: login
+
+    - bash: |
+        set -euo pipefail
+        kubectl create namespace "$(DD_NAMESPACE)" --dry-run=client -o yaml | kubectl apply -f -
+      displayName: Create namespace (idempotent)
+
+    - bash: |
+        set -euo pipefail
+
+        # DefectDojo chart is referenced via OCI (no helm repo add needed for OCI).
+        # If you prefer a classic Helm repo, replace $(DD_CHART) with that reference
+        # and add a 'helm repo add ...' step here.
+
+        helm upgrade --install "$(DD_RELEASE_NAME)" "$(DD_CHART)" \
+          --version "$(DD_CHART_VERSION)" \
+          --namespace "$(DD_NAMESPACE)" \
+          --create-namespace \
+          -f helm/defectdojo/values-dev.yaml \
+          --set-string host="$(DD_HOST)" \
+          --set-string siteUrl="$(DD_BASE_URL)" \
+          --set-string admin.password="$(DD_ADMIN_PASSWORD)" \
+          --set-string admin.secretKey="$(DD_SECRET_KEY)" \
+          --set-string postgresql.auth.password="$(DD_DB_PASSWORD)"
+      displayName: Helm upgrade --install defectdojo
+
+- stage: Verify
+  displayName: Verify
+  dependsOn: Deploy
+  jobs:
+  - job: Verify
+    displayName: Rollout + smoke tests
+    steps:
+    - checkout: self
+
+    - task: KubectlInstaller@0
+      displayName: Install kubectl
+      inputs:
+        kubectlVersion: latest
+
+    - task: Kubernetes@1
+      displayName: Login to cluster
+      inputs:
+        connectionType: Kubernetes Service Connection
+        kubernetesServiceEndpoint: $(K8S_SERVICE_CONNECTION)
+        command: login
+
+    - bash: |
+        set -euo pipefail
+        kubectl -n "$(DD_NAMESPACE)" rollout status deployment -l "app.kubernetes.io/instance=$(DD_RELEASE_NAME)" --timeout=15m
+      displayName: Wait for deployments rollout
+
+    - bash: |
+        set -euo pipefail
+        chmod +x scripts/wait_for_url.sh scripts/smoke_test.sh
+        DD_BASE_URL="$(DD_BASE_URL)" ./scripts/smoke_test.sh
+      displayName: Smoke test (ingress + API)

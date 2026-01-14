@@ -70,6 +70,10 @@ valkey:
 
 # The initializer Job does not inherit global extraEnv; set it explicitly.
 initializer:
+  # The upstream initializer entrypoint currently crashes if `dojo_system_settings`
+  # exists but contains zero rows (IndexError during ENABLE_AUDITLOG pre-check).
+  # We disable the chart initializer and run a controlled bootstrap Job from the pipeline.
+  run: false
   resources:
     requests:
       cpu: 25m

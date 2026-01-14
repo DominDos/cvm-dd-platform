@@ -69,104 +69,192 @@ Write-Host ('Running: helm ' + ($helmArgs -join ' '))
 & helm @helmArgs | Out-Host
 Assert-LastExitCode 'helm upgrade --install'
 
-Write-Host 'Waiting for DefectDojo initializer job (migrations/bootstrap)...'
-$initializerSelector = 'defectdojo.org/component=initializer'
+function Invoke-PostgresSql([string]$Sql) {
+    $pgPod = 'defectdojo-postgresql-0'
+    $cmd = @(
+        'exec',
+        '-n', $namespace,
+        $pgPod,
+        '--',
+        'bash', '-lc',
+        ('export PGPASSWORD="$(cat /opt/bitnami/postgresql/secrets/postgresql-password)"; /opt/bitnami/postgresql/bin/psql -U defectdojo -d defectdojo -v ON_ERROR_STOP=1 -c "' + $Sql.Replace('"','\"') + '"')
+    )
+    & kubectl @cmd | Out-Host
+    Assert-LastExitCode 'psql'
+}
 
-$sawJob = $false
-$start = Get-Date
-$timeoutAt = $start.AddMinutes(20)
-$lastStatusLine = ''
-
-while ((Get-Date) -lt $timeoutAt) {
-    $jobJson = kubectl get job -n $namespace -l $initializerSelector -o json 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Fail 'kubectl get job for initializer selector failed.'
-    }
-
-    $jobs = $null
+function Reset-DojoSystemSettingsIfEmpty() {
+    Write-Host 'Pre-flight: checking dojo_system_settings row count (workaround for upstream IndexError)...'
     try {
-        $jobs = $jobJson | ConvertFrom-Json
+        Invoke-PostgresSql 'SELECT COUNT(*) AS cnt FROM dojo_system_settings;'
     } catch {
-        Fail "Failed to parse initializer job JSON: $($_.Exception.Message)"
+        Write-Host 'dojo_system_settings does not exist yet (ok).'
+        return
     }
 
-    $items = @($jobs.items)
-    if ($items.Count -eq 0) {
-        if ($sawJob) {
-            Write-Host 'Initializer job disappeared before completing. Showing recent events for debugging:'
-            kubectl get events -n $namespace --sort-by=.lastTimestamp | Select-Object -Last 40 | Out-Host
-            Fail 'Initializer job disappeared before completing (possibly deleted after failure).'
+    # If table exists but is empty, drop it so the initializer pre-check does not crash.
+    # It will be recreated by migrations.
+    try {
+        $cnt = & kubectl exec -n $namespace defectdojo-postgresql-0 -- bash -lc 'export PGPASSWORD="$(cat /opt/bitnami/postgresql/secrets/postgresql-password)"; /opt/bitnami/postgresql/bin/psql -U defectdojo -d defectdojo -At -c "SELECT COUNT(*) FROM dojo_system_settings;"' 2>$null
+        $cntText = ($cnt | Out-String).Trim()
+        if ($cntText -eq '0') {
+            Write-Host 'dojo_system_settings exists but is empty; dropping table to avoid initializer crash...'
+            Invoke-PostgresSql 'DROP TABLE IF EXISTS dojo_system_settings CASCADE;'
+        } else {
+            Write-Host "dojo_system_settings row count: $cntText (no action)."
+        }
+    } catch {
+        Write-Host 'Could not determine dojo_system_settings count; continuing.'
+    }
+}
+
+function Run-BootstrapJobAndWait() {
+    $jobName = 'defectdojo-cvm-bootstrap'
+    $image = 'defectdojo/defectdojo-django:2.53.5'
+
+    Write-Host "Creating pipeline bootstrap Job '$jobName' (replaces chart initializer)..."
+    kubectl -n $namespace delete job $jobName --ignore-not-found=true | Out-Null
+
+    $jobYaml = @"
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: $jobName
+  namespace: $namespace
+  labels:
+    app.kubernetes.io/instance: $releaseName
+    app.kubernetes.io/name: defectdojo
+    cvm.defectdojo/component: bootstrap
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: $releaseName
+        app.kubernetes.io/name: defectdojo
+        cvm.defectdojo/component: bootstrap
+    spec:
+      restartPolicy: Never
+      serviceAccountName: defectdojo
+      initContainers:
+        - name: wait-for-db
+          image: $image
+          imagePullPolicy: IfNotPresent
+          command: ['/bin/bash','-c','/wait-for-it.sh ${DD_DATABASE_HOST:-postgres}:${DD_DATABASE_PORT:-5432} -t 300 -s -- /bin/echo Database is up']
+          envFrom:
+            - configMapRef:
+                name: $releaseName
+            - secretRef:
+                name: $releaseName-extrasecrets
+                optional: true
+          env:
+            - name: DD_ENABLE_AUDITLOG
+              value: 'False'
+            - name: DD_INITIALIZE
+              value: 'true'
+      containers:
+        - name: bootstrap
+          image: $image
+          imagePullPolicy: IfNotPresent
+          command: ['/entrypoint-initializer.sh']
+          envFrom:
+            - configMapRef:
+                name: $releaseName
+            - secretRef:
+                name: $releaseName
+                optional: true
+            - secretRef:
+                name: $releaseName-extrasecrets
+                optional: true
+          env:
+            - name: DD_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: defectdojo-postgresql-specific
+                  key: postgresql-password
+            - name: DD_ENABLE_AUDITLOG
+              value: 'False'
+            - name: DD_INITIALIZE
+              value: 'true'
+"@
+
+    $jobYaml | kubectl apply -f - | Out-Host
+    Assert-LastExitCode 'kubectl apply bootstrap job'
+
+    Write-Host 'Waiting for bootstrap job to complete...'
+    $selector = 'cvm.defectdojo/component=bootstrap'
+    $sawJob = $false
+    $start = Get-Date
+    $timeoutAt = $start.AddMinutes(20)
+    $lastStatusLine = ''
+
+    while ((Get-Date) -lt $timeoutAt) {
+        $jobJson = kubectl get job -n $namespace -l $selector -o json 2>$null
+        if ($LASTEXITCODE -ne 0) { Fail 'kubectl get job for bootstrap selector failed.' }
+        $jobs = $jobJson | ConvertFrom-Json
+        $items = @($jobs.items)
+        if ($items.Count -eq 0) {
+            Start-Sleep -Seconds 5
+            continue
         }
 
-        $elapsed = [int]((Get-Date) - $start).TotalSeconds
-        if ($elapsed -eq 0 -or ($elapsed % 30 -eq 0)) {
-            Write-Host 'Initializer job not created yet; waiting...'
+        $sawJob = $true
+        $job = $items | Sort-Object { $_.metadata.creationTimestamp } | Select-Object -Last 1
+        $name = $job.metadata.name
+
+        $backoffLimit = 6
+        if ($job.PSObject.Properties.Match('spec').Count -gt 0 -and $job.spec) {
+            if ($job.spec.PSObject.Properties.Match('backoffLimit').Count -gt 0 -and $null -ne $job.spec.backoffLimit) { $backoffLimit = [int]$job.spec.backoffLimit }
         }
-        Start-Sleep -Seconds 5
-        continue
-    }
 
-    $sawJob = $true
-    $job = $items | Sort-Object { $_.metadata.creationTimestamp } | Select-Object -Last 1
-    $name = $job.metadata.name
-
-    $backoffLimit = 6
-    if ($job.PSObject.Properties.Match('spec').Count -gt 0 -and $job.spec) {
-        if ($job.spec.PSObject.Properties.Match('backoffLimit').Count -gt 0 -and $null -ne $job.spec.backoffLimit) {
-            $backoffLimit = [int]$job.spec.backoffLimit
+        $active = 0
+        $succeeded = 0
+        $failed = 0
+        if ($job.PSObject.Properties.Match('status').Count -gt 0 -and $job.status) {
+            if ($job.status.PSObject.Properties.Match('active').Count -gt 0 -and $job.status.active) { $active = [int]$job.status.active }
+            if ($job.status.PSObject.Properties.Match('succeeded').Count -gt 0 -and $job.status.succeeded) { $succeeded = [int]$job.status.succeeded }
+            if ($job.status.PSObject.Properties.Match('failed').Count -gt 0 -and $job.status.failed) { $failed = [int]$job.status.failed }
         }
-    }
 
-    $active = 0
-    $succeeded = 0
-    $failed = 0
-
-    if ($job.PSObject.Properties.Match('status').Count -gt 0 -and $job.status) {
-        if ($job.status.PSObject.Properties.Match('active').Count -gt 0 -and $job.status.active) { $active = [int]$job.status.active }
-        if ($job.status.PSObject.Properties.Match('succeeded').Count -gt 0 -and $job.status.succeeded) { $succeeded = [int]$job.status.succeeded }
-        if ($job.status.PSObject.Properties.Match('failed').Count -gt 0 -and $job.status.failed) { $failed = [int]$job.status.failed }
-    }
-
-    $isFailed = $false
-    if ($job.PSObject.Properties.Match('status').Count -gt 0 -and $job.status -and $job.status.PSObject.Properties.Match('conditions').Count -gt 0 -and $job.status.conditions) {
-        foreach ($cond in @($job.status.conditions)) {
-            if ($cond -and $cond.type -eq 'Failed' -and $cond.status -eq 'True') {
-                $isFailed = $true
-                break
+        $isFailed = $false
+        if ($job.PSObject.Properties.Match('status').Count -gt 0 -and $job.status -and $job.status.PSObject.Properties.Match('conditions').Count -gt 0 -and $job.status.conditions) {
+            foreach ($cond in @($job.status.conditions)) {
+                if ($cond -and $cond.type -eq 'Failed' -and $cond.status -eq 'True') { $isFailed = $true; break }
             }
         }
+
+        $statusLine = "bootstrap job=$name active=$active succeeded=$succeeded failed=$failed backoffLimit=$backoffLimit"
+        if ($statusLine -ne $lastStatusLine) {
+            Write-Host $statusLine
+            $lastStatusLine = $statusLine
+        } elseif (((Get-Date) - $start).TotalSeconds % 30 -lt 6) {
+            Write-Host $statusLine
+        }
+
+        if ($succeeded -ge 1) {
+            Write-Host 'Bootstrap job completed.'
+            return
+        }
+
+        if ($isFailed -or ($failed -gt $backoffLimit)) {
+            Write-Host 'Bootstrap job failed (final). Capturing diagnostics...'
+            kubectl describe job -n $namespace $name | Out-Host
+            kubectl logs -n $namespace job/$name --all-containers --tail=250 | Out-Host
+            Fail 'Bootstrap job failed.'
+        }
+
+        Start-Sleep -Seconds 10
     }
 
-    $statusLine = "initializer job=$name active=$active succeeded=$succeeded failed=$failed backoffLimit=$backoffLimit"
-    if ($statusLine -ne $lastStatusLine) {
-        Write-Host $statusLine
-        $lastStatusLine = $statusLine
-    } elseif (((Get-Date) - $start).TotalSeconds % 30 -lt 6) {
-        Write-Host $statusLine
+    if ($sawJob) {
+        Write-Host 'Bootstrap job did not complete within 20 minutes. Recent events:'
+        kubectl get events -n $namespace --sort-by=.lastTimestamp | Select-Object -Last 40 | Out-Host
     }
-
-    if ($succeeded -ge 1) {
-        Write-Host 'Initializer job completed.'
-        break
-    }
-
-    # Jobs can transiently fail and be retried (failed>=1) while still Running.
-    # Only fail when the Job is definitively Failed (condition=Failed) or when failed count exceeds backoffLimit.
-    if ($isFailed -or ($failed -gt $backoffLimit)) {
-        Write-Host 'Initializer job failed (final). Capturing diagnostics...'
-        kubectl describe job -n $namespace $name | Out-Host
-        kubectl logs -n $namespace job/$name --all-containers --tail=200 | Out-Host
-        Fail 'Initializer job failed.'
-    }
-
-    Start-Sleep -Seconds 10
+    Fail 'Bootstrap job timed out.'
 }
 
-if ((Get-Date) -ge $timeoutAt) {
-    Write-Host 'Initializer job did not complete within 20 minutes. Recent events:'
-    kubectl get events -n $namespace --sort-by=.lastTimestamp | Select-Object -Last 40 | Out-Host
-    Fail 'Initializer job timed out.'
-}
+Reset-DojoSystemSettingsIfEmpty
+Run-BootstrapJobAndWait
 
 Write-Host 'Waiting for deployments to become ready (rollout status)...'
 $deployments = kubectl get deploy -n $namespace -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'

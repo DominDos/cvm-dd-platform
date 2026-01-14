@@ -40,19 +40,45 @@ function Test-TcpConnect([string]$Host, [int]$Port, [int]$TimeoutMs = 3000) {
     }
 }
 
-Write-Host 'Waiting for DefectDojo initializer job to complete (up to 20 minutes)...'
+Write-Host 'Waiting for DefectDojo bootstrap job to complete (up to 20 minutes)...'
 kubectl -n $namespace get jobs | Out-Host
 Assert-LastExitCode 'kubectl get jobs'
 
-$selector = 'defectdojo.org/component=initializer'
+$bootstrapSelector = 'cvm.defectdojo/component=bootstrap'
+$initializerSelector = 'defectdojo.org/component=initializer'
+
+$selector = $null
+try {
+    $bootstrapJobsJson = kubectl get job -n $namespace -l $bootstrapSelector -o json 2>$null
+    if ($LASTEXITCODE -eq 0 -and $bootstrapJobsJson) {
+        $bootstrapJobs = $bootstrapJobsJson | ConvertFrom-Json
+        if (@($bootstrapJobs.items).Count -gt 0) { $selector = $bootstrapSelector }
+    }
+} catch {}
+
+if (-not $selector) {
+    try {
+        $initJobsJson = kubectl get job -n $namespace -l $initializerSelector -o json 2>$null
+        if ($LASTEXITCODE -eq 0 -and $initJobsJson) {
+            $initJobs = $initJobsJson | ConvertFrom-Json
+            if (@($initJobs.items).Count -gt 0) { $selector = $initializerSelector }
+        }
+    } catch {}
+}
+
+if (-not $selector) {
+    Warn 'No bootstrap/initializer job found; continuing (install stage may have already completed initialization).'
+} else {
+    Write-Host "Using job selector: $selector"
+}
 $start = Get-Date
 $timeoutAt = $start.AddMinutes(20)
 $lastStatus = ''
 
-while ((Get-Date) -lt $timeoutAt) {
+while ($selector -and ((Get-Date) -lt $timeoutAt)) {
     $jobJson = kubectl get job -n $namespace -l $selector -o json 2>$null
     if ($LASTEXITCODE -ne 0) {
-        Fail 'kubectl get job for initializer selector failed.'
+        Fail 'kubectl get job for selected job selector failed.'
     }
 
     $jobs = $null
@@ -89,7 +115,7 @@ while ((Get-Date) -lt $timeoutAt) {
         }
     }
 
-    $status = "initializer job=$name active=$active succeeded=$succeeded failed=$failed backoffLimit=$backoffLimit"
+    $status = "job=$name active=$active succeeded=$succeeded failed=$failed backoffLimit=$backoffLimit"
     if ($status -ne $lastStatus) {
         Write-Host $status
         $lastStatus = $status
@@ -98,28 +124,28 @@ while ((Get-Date) -lt $timeoutAt) {
     }
 
     if ($succeeded -ge 1) {
-        Write-Host 'Initializer job completed.'
+        Write-Host 'Job completed.'
         break
     }
 
     if ($isFailed -or ($failed -gt $backoffLimit)) {
-        Warn 'Initializer job failed (final). Capturing diagnostics...'
+        Warn 'Job failed (final). Capturing diagnostics...'
         kubectl -n $namespace describe job $name | Out-Host
         kubectl -n $namespace logs job/$name --all-containers --tail=200 | Out-Host
-        Fail 'Initializer job failed.'
+        Fail 'Job failed.'
     }
 
     Start-Sleep -Seconds 10
 }
 
-if ((Get-Date) -ge $timeoutAt) {
-    Warn 'Initializer job did not complete within 20 minutes. Capturing diagnostics...'
+if ($selector -and ((Get-Date) -ge $timeoutAt)) {
+    Warn 'Job did not complete within 20 minutes. Capturing diagnostics...'
     try { kubectl -n $namespace get events --sort-by=.lastTimestamp | Select-Object -Last 40 | Out-Host } catch {}
     try {
         $jobName = (kubectl -n $namespace get job -l $selector -o jsonpath='{.items[-1:].metadata.name}' 2>$null | Out-String).Trim()
         if ($jobName) { kubectl -n $namespace logs job/$jobName --all-containers --tail=200 | Out-Host }
     } catch {}
-    Fail 'Initializer job timed out.'
+    Fail 'Job timed out.'
 }
 
 Write-Host "DefectDojo URL (from DD_HOST): $url"

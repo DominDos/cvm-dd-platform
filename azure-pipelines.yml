@@ -221,3 +221,17 @@ stages:
                 pwsh -NoProfile -File "$(System.DefaultWorkingDirectory)\scripts\aks-login.ps1"
                 pwsh -NoProfile -File "$(System.DefaultWorkingDirectory)\scripts\install-defectdojo.ps1"
                 pwsh -NoProfile -File "$(System.DefaultWorkingDirectory)\scripts\post-install-bootstrap.ps1"
+
+          - task: PowerShell@2
+            displayName: Show suggested nip.io host
+            inputs:
+              targetType: inline
+              pwsh: true
+              script: |
+                $value = '$(DD_SUGGESTED_HOST)'
+                if ([string]::IsNullOrWhiteSpace($value) -or $value -eq ('$' + '(DD_SUGGESTED_HOST)')) {
+                  Write-Host 'DD_SUGGESTED_HOST not set (ingress IP may be pending or not an IP).'
+                } else {
+                  Write-Host "DD_SUGGESTED_HOST=$value"
+                  Write-Host "Open: http://$value/login"
+                }

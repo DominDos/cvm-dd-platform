@@ -1,3 +1,8 @@
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: SC-AZURE
+
 trigger:
   branches:
     include:
@@ -145,7 +150,7 @@ stages:
             displayName: Login to Azure, deploy to AKS
             name: deploy_defectdojo
             inputs:
-              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              azureSubscription: ${{ parameters.azureServiceConnection }}
               scriptType: ps
               scriptLocation: inlineScript
               addSpnToEnvironment: true

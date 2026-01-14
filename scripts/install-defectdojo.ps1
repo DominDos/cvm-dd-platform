@@ -69,6 +69,27 @@ Write-Host ('Running: helm ' + ($helmArgs -join ' '))
 & helm @helmArgs | Out-Host
 Assert-LastExitCode 'helm upgrade --install'
 
+Write-Host 'Waiting for DefectDojo initializer job (migrations/bootstrap)...'
+$initializerSelector = 'defectdojo.org/component=initializer'
+
+$initializerFound = $false
+$deadline = (Get-Date).AddMinutes(2)
+while ((Get-Date) -lt $deadline) {
+    $jobs = kubectl get job -n $namespace -l $initializerSelector -o name 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($jobs)) {
+        $initializerFound = $true
+        break
+    }
+    Start-Sleep -Seconds 5
+}
+
+if ($initializerFound) {
+    kubectl wait -n $namespace --for=condition=complete job -l $initializerSelector --timeout=20m | Out-Host
+    Assert-LastExitCode 'kubectl wait for initializer job'
+} else {
+    Write-Host 'Initializer job not detected (continuing to rollout checks).'
+}
+
 Write-Host 'Waiting for deployments to become ready (rollout status)...'
 $deployments = kubectl get deploy -n $namespace -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
 Assert-LastExitCode "kubectl get deploy -n $namespace"
@@ -84,6 +105,6 @@ if ($deploymentList.Count -eq 0) {
 
 foreach ($deployment in $deploymentList) {
     Write-Host "- kubectl rollout status deployment/$deployment"
-    kubectl rollout status deployment/$deployment -n $namespace --timeout=10m | Out-Host
+    kubectl rollout status deployment/$deployment -n $namespace --timeout=20m | Out-Host
     Assert-LastExitCode "kubectl rollout status deployment/$deployment"
 }

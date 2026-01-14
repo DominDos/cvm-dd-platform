@@ -49,14 +49,24 @@ Write-Host "Idempotency flags: createSecret=$createSecret createValkeySecret=$cr
 
 # Must include: helm upgrade --install defectdojo <chart> --namespace defectdojo -f k8s/defectdojo-values.yaml
 Write-Host "Installing/upgrading '$releaseName' from '$chartRef' (version $chartVersion)..."
-helm upgrade --install $releaseName $chartRef --version $chartVersion --namespace $namespace -f k8s/defectdojo-values.yaml `
-  --set host=$env:DD_HOST `
-  --set siteUrl=("http://" + $env:DD_HOST) `
-  --set django.ingress.ingressClassName=nginx `
-  --set django.ingress.activateTLS=false `
-  --set createSecret=$createSecret `
-  --set createValkeySecret=$createValkeySecret `
-  --set createPostgresqlSecret=$createPostgresqlSecret | Out-Host
+$helmArgs = @(
+        'upgrade', '--install',
+        $releaseName,
+        $chartRef,
+        '--version', $chartVersion,
+        '--namespace', $namespace,
+        '-f', 'k8s/defectdojo-values.yaml',
+        '--set', "host=$($env:DD_HOST)",
+        '--set', ("siteUrl=http://" + $env:DD_HOST),
+        '--set', 'django.ingress.ingressClassName=nginx',
+        '--set', 'django.ingress.activateTLS=false',
+        '--set', ("createSecret=$createSecret"),
+        '--set', ("createValkeySecret=$createValkeySecret"),
+        '--set', ("createPostgresqlSecret=$createPostgresqlSecret")
+)
+
+Write-Host ('Running: helm ' + ($helmArgs -join ' '))
+& helm @helmArgs | Out-Host
 Assert-LastExitCode 'helm upgrade --install'
 
 Write-Host 'Waiting for deployments to become ready (rollout status)...'

@@ -36,6 +36,48 @@ stages:
           - checkout: self
 
           - task: PowerShell@2
+            displayName: Agent tooling check (helm/kubectl)
+            inputs:
+              targetType: inline
+              pwsh: true
+              script: |
+                $ErrorActionPreference = 'Stop'
+
+                function Find-Exe([string]$name, [string[]]$candidates) {
+                  $cmd = Get-Command $name -ErrorAction SilentlyContinue
+                  if ($cmd) { return $cmd.Source }
+                  foreach ($c in $candidates) {
+                    if (Test-Path -LiteralPath $c) { return $c }
+                  }
+                  try {
+                    $w = (where.exe $name 2>$null | Select-Object -First 1)
+                    if ($w) { return $w }
+                  } catch {}
+                  return $null
+                }
+
+                $helm = Find-Exe 'helm' @(
+                  'C:\ProgramData\chocolatey\bin\helm.exe',
+                  'C:\Program Files\Helm\helm.exe',
+                  'C:\tools\helm\helm.exe'
+                )
+                if (-not $helm) { throw 'helm.exe not found on agent PATH (or common locations). Install Helm or add it to PATH.' }
+                Write-Host "Found helm: $helm"
+                Write-Host "##vso[task.prependpath]$(Split-Path -Parent $helm)"
+
+                $kubectl = Find-Exe 'kubectl' @(
+                  'C:\ProgramData\chocolatey\bin\kubectl.exe',
+                  'C:\Program Files\Kubernetes\kubectl.exe',
+                  'C:\tools\kubectl\kubectl.exe'
+                )
+                if (-not $kubectl) { throw 'kubectl.exe not found on agent PATH (or common locations). Install kubectl or add it to PATH.' }
+                Write-Host "Found kubectl: $kubectl"
+                Write-Host "##vso[task.prependpath]$(Split-Path -Parent $kubectl)"
+
+                kubectl version --client
+                helm version
+
+          - task: PowerShell@2
             displayName: Verify required files exist
             inputs:
               targetType: inline
@@ -98,6 +140,39 @@ stages:
               inlineScript: |
                 $ErrorActionPreference = 'Stop'
 
+                function Find-Exe([string]$name, [string[]]$candidates) {
+                  $cmd = Get-Command $name -ErrorAction SilentlyContinue
+                  if ($cmd) { return $cmd.Source }
+                  foreach ($c in $candidates) {
+                    if (Test-Path -LiteralPath $c) { return $c }
+                  }
+                  try {
+                    $w = (where.exe $name 2>$null | Select-Object -First 1)
+                    if ($w) { return $w }
+                  } catch {}
+                  return $null
+                }
+
+                $helm = Find-Exe 'helm' @(
+                  'C:\ProgramData\chocolatey\bin\helm.exe',
+                  'C:\Program Files\Helm\helm.exe',
+                  'C:\tools\helm\helm.exe'
+                )
+                if ($helm) {
+                  Write-Host "Found helm: $helm"
+                  $env:PATH = "$(Split-Path -Parent $helm);$env:PATH"
+                }
+
+                $kubectl = Find-Exe 'kubectl' @(
+                  'C:\ProgramData\chocolatey\bin\kubectl.exe',
+                  'C:\Program Files\Kubernetes\kubectl.exe',
+                  'C:\tools\kubectl\kubectl.exe'
+                )
+                if ($kubectl) {
+                  Write-Host "Found kubectl: $kubectl"
+                  $env:PATH = "$(Split-Path -Parent $kubectl);$env:PATH"
+                }
+
                 Write-Host 'Tooling versions (self-hosted agent):'
                 az version
                 kubectl version --client
@@ -108,6 +183,7 @@ stages:
                 $env:AKS_NAME = "$(AKS_NAME)"
                 $env:DD_HOST = "$(DD_HOST)"
                 $env:DD_SCHEME = "$(DD_SCHEME)"
+                $env:DD_CHART_VERSION = "$(DD_CHART_VERSION)"
 
                 Write-Host 'Helm repo diagnostics (before install):'
                 helm repo list | Out-Host

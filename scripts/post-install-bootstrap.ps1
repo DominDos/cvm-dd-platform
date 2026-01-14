@@ -9,7 +9,7 @@ if ([string]::IsNullOrWhiteSpace($env:DD_HOST)) { Fail 'Missing required env var
 $scheme = if ([string]::IsNullOrWhiteSpace($env:DD_SCHEME)) { 'http' } else { $env:DD_SCHEME }
 
 $namespace = 'defectdojo'
-$url = "$scheme://$($env:DD_HOST)"
+$url = "${scheme}://$($env:DD_HOST)"
 
 Write-Host "DefectDojo URL (from DD_HOST): $url"
 

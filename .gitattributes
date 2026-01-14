@@ -1,0 +1,14 @@
+# Enforce consistent line endings across platforms (Windows self-hosted agent)
+
+# Shell scripts must be LF
+*.sh text eol=lf
+
+# YAML must be LF
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# PowerShell scripts must be CRLF
+*.ps1 text eol=crlf
+
+# Markdown must be LF
+*.md text eol=lf

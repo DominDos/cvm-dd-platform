@@ -11,7 +11,7 @@ $releaseName = 'defectdojo'
 $repoName = 'defectdojo'
 $repoUrl = 'https://raw.githubusercontent.com/DefectDojo/django-DefectDojo/helm-charts'
 $chartRef = 'defectdojo/defectdojo'
-$chartVersion = '1.9.7'
+$chartVersion = if ([string]::IsNullOrWhiteSpace($env:DD_CHART_VERSION)) { '1.9.5' } else { $env:DD_CHART_VERSION }
 
 if ([string]::IsNullOrWhiteSpace($env:DD_HOST)) { Fail 'Missing required env var: DD_HOST' }
 

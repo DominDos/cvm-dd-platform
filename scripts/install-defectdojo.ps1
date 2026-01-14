@@ -140,8 +140,7 @@ spec:
         - name: wait-for-db
           image: $image
           imagePullPolicy: IfNotPresent
-                    # NOTE: escape `$` so PowerShell doesn't eat bash env var expansion.
-                    command: ['/bin/bash','-c',': `${DD_DATABASE_HOST:=defectdojo-postgresql}; : `${DD_DATABASE_PORT:=5432}; /wait-for-it.sh "`$DD_DATABASE_HOST:`$DD_DATABASE_PORT" -t 300 -s -- /bin/echo Database is up']
+          command: ['/bin/bash','-lc','/wait-for-it.sh "`$DD_DATABASE_HOST:`$DD_DATABASE_PORT" -t 300 -s -- /bin/echo Database is up']
           envFrom:
             - configMapRef:
                 name: $releaseName

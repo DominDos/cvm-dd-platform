@@ -109,9 +109,16 @@ while ((Get-Date) -lt $timeoutAt) {
     $sawJob = $true
     $job = $items | Sort-Object { $_.metadata.creationTimestamp } | Select-Object -Last 1
     $name = $job.metadata.name
-    $active = if ($job.status.active) { [int]$job.status.active } else { 0 }
-    $succeeded = if ($job.status.succeeded) { [int]$job.status.succeeded } else { 0 }
-    $failed = if ($job.status.failed) { [int]$job.status.failed } else { 0 }
+
+    $active = 0
+    $succeeded = 0
+    $failed = 0
+
+    if ($job.PSObject.Properties.Match('status').Count -gt 0 -and $job.status) {
+        if ($job.status.PSObject.Properties.Match('active').Count -gt 0 -and $job.status.active) { $active = [int]$job.status.active }
+        if ($job.status.PSObject.Properties.Match('succeeded').Count -gt 0 -and $job.status.succeeded) { $succeeded = [int]$job.status.succeeded }
+        if ($job.status.PSObject.Properties.Match('failed').Count -gt 0 -and $job.status.failed) { $failed = [int]$job.status.failed }
+    }
 
     $statusLine = "initializer job=$name active=$active succeeded=$succeeded failed=$failed"
     if ($statusLine -ne $lastStatusLine) {

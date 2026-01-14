@@ -130,8 +130,21 @@ while ($selector -and ((Get-Date) -lt $timeoutAt)) {
 
     if ($isFailed -or ($failed -gt $backoffLimit)) {
         Warn 'Job failed (final). Capturing diagnostics...'
-        kubectl -n $namespace describe job $name | Out-Host
-        kubectl -n $namespace logs job/$name --all-containers --tail=200 | Out-Host
+        try { kubectl -n $namespace describe job $name | Out-Host } catch {}
+        try {
+            kubectl -n $namespace get pods -l job-name=$name -o wide | Out-Host
+            $podNames = (kubectl -n $namespace get pods -l job-name=$name -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>$null | Out-String).Trim() -split "`n" |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            foreach ($p in $podNames) {
+                Write-Host "--- describe pod/$p"
+                try { kubectl -n $namespace describe pod $p | Out-Host } catch {}
+                Write-Host "--- logs pod/$p (all containers, best-effort)"
+                try { kubectl -n $namespace logs $p --all-containers --tail=200 | Out-Host } catch {}
+                Write-Host "--- logs pod/$p (init wait-for-db, best-effort)"
+                try { kubectl -n $namespace logs $p -c wait-for-db --tail=200 | Out-Host } catch {}
+            }
+        } catch {}
+        try { kubectl -n $namespace logs job/$name --all-containers --tail=200 | Out-Host } catch {}
         Fail 'Job failed.'
     }
 

@@ -72,22 +72,74 @@ Assert-LastExitCode 'helm upgrade --install'
 Write-Host 'Waiting for DefectDojo initializer job (migrations/bootstrap)...'
 $initializerSelector = 'defectdojo.org/component=initializer'
 
-$initializerFound = $false
-$deadline = (Get-Date).AddMinutes(2)
-while ((Get-Date) -lt $deadline) {
-    $jobs = kubectl get job -n $namespace -l $initializerSelector -o name 2>$null
-    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($jobs)) {
-        $initializerFound = $true
+$sawJob = $false
+$start = Get-Date
+$timeoutAt = $start.AddMinutes(20)
+$lastStatusLine = ''
+
+while ((Get-Date) -lt $timeoutAt) {
+    $jobJson = kubectl get job -n $namespace -l $initializerSelector -o json 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Fail 'kubectl get job for initializer selector failed.'
+    }
+
+    $jobs = $null
+    try {
+        $jobs = $jobJson | ConvertFrom-Json
+    } catch {
+        Fail "Failed to parse initializer job JSON: $($_.Exception.Message)"
+    }
+
+    $items = @($jobs.items)
+    if ($items.Count -eq 0) {
+        if ($sawJob) {
+            Write-Host 'Initializer job disappeared before completing. Showing recent events for debugging:'
+            kubectl get events -n $namespace --sort-by=.lastTimestamp | Select-Object -Last 40 | Out-Host
+            Fail 'Initializer job disappeared before completing (possibly deleted after failure).'
+        }
+
+        $elapsed = [int]((Get-Date) - $start).TotalSeconds
+        if ($elapsed -eq 0 -or ($elapsed % 30 -eq 0)) {
+            Write-Host 'Initializer job not created yet; waiting...'
+        }
+        Start-Sleep -Seconds 5
+        continue
+    }
+
+    $sawJob = $true
+    $job = $items | Sort-Object { $_.metadata.creationTimestamp } | Select-Object -Last 1
+    $name = $job.metadata.name
+    $active = if ($job.status.active) { [int]$job.status.active } else { 0 }
+    $succeeded = if ($job.status.succeeded) { [int]$job.status.succeeded } else { 0 }
+    $failed = if ($job.status.failed) { [int]$job.status.failed } else { 0 }
+
+    $statusLine = "initializer job=$name active=$active succeeded=$succeeded failed=$failed"
+    if ($statusLine -ne $lastStatusLine) {
+        Write-Host $statusLine
+        $lastStatusLine = $statusLine
+    } elseif (((Get-Date) - $start).TotalSeconds % 30 -lt 6) {
+        Write-Host $statusLine
+    }
+
+    if ($succeeded -ge 1) {
+        Write-Host 'Initializer job completed.'
         break
     }
-    Start-Sleep -Seconds 5
+
+    if ($failed -ge 1) {
+        Write-Host 'Initializer job failed. Capturing diagnostics...'
+        kubectl describe job -n $namespace $name | Out-Host
+        kubectl logs -n $namespace job/$name --all-containers --tail=200 | Out-Host
+        Fail 'Initializer job failed.'
+    }
+
+    Start-Sleep -Seconds 10
 }
 
-if ($initializerFound) {
-    kubectl wait -n $namespace --for=condition=complete job -l $initializerSelector --timeout=20m | Out-Host
-    Assert-LastExitCode 'kubectl wait for initializer job'
-} else {
-    Write-Host 'Initializer job not detected (continuing to rollout checks).'
+if ((Get-Date) -ge $timeoutAt) {
+    Write-Host 'Initializer job did not complete within 20 minutes. Recent events:'
+    kubectl get events -n $namespace --sort-by=.lastTimestamp | Select-Object -Last 40 | Out-Host
+    Fail 'Initializer job timed out.'
 }
 
 Write-Host 'Waiting for deployments to become ready (rollout status)...'

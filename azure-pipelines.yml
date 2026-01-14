@@ -196,11 +196,21 @@ stages:
                 helm version
 
                 # Expose pipeline variables to the PowerShell scripts as environment variables.
-                $env:AKS_RG = "$(AKS_RG)"
-                $env:AKS_NAME = "$(AKS_NAME)"
-                $env:DD_HOST = "$(DD_HOST)"
-                $env:DD_SCHEME = "$(DD_SCHEME)"
-                $env:DD_CHART_VERSION = "$(DD_CHART_VERSION)"
+                $env:AKS_RG = '$(AKS_RG)'
+                $env:AKS_NAME = '$(AKS_NAME)'
+                $env:DD_HOST = '$(DD_HOST)'
+                $env:DD_SCHEME = '$(DD_SCHEME)'
+                $env:DD_CHART_VERSION = '$(DD_CHART_VERSION)'
+
+                function Require-PipelineVar([string]$name, [string]$value) {
+                  if ([string]::IsNullOrWhiteSpace($value) -or $value -eq ("$" + "(" + $name + ")")) {
+                    throw "Missing pipeline variable '$name'. Set it in variable group VG-DEFECTDOJO-SECRETS or pipeline variables."
+                  }
+                }
+
+                Require-PipelineVar 'AKS_RG' $env:AKS_RG
+                Require-PipelineVar 'AKS_NAME' $env:AKS_NAME
+                Require-PipelineVar 'DD_HOST' $env:DD_HOST
 
                 Write-Host 'Helm repo diagnostics (before install):'
                 helm repo list | Out-Host

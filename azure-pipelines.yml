@@ -35,6 +35,11 @@ stages:
         steps:
           - checkout: self
 
+          - task: HelmInstaller@1
+            displayName: Install Helm
+            inputs:
+              helmVersionToInstall: 'latest'
+
           - task: PowerShell@2
             displayName: Agent tooling check (helm/kubectl)
             inputs:
@@ -128,6 +133,11 @@ stages:
         displayName: Deploy DefectDojo
         steps:
           - checkout: self
+
+          - task: HelmInstaller@1
+            displayName: Install Helm
+            inputs:
+              helmVersionToInstall: 'latest'
 
           - task: AzureCLI@2
             displayName: Login to Azure, deploy to AKS

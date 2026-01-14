@@ -110,6 +110,13 @@ while ((Get-Date) -lt $timeoutAt) {
     $job = $items | Sort-Object { $_.metadata.creationTimestamp } | Select-Object -Last 1
     $name = $job.metadata.name
 
+    $backoffLimit = 6
+    if ($job.PSObject.Properties.Match('spec').Count -gt 0 -and $job.spec) {
+        if ($job.spec.PSObject.Properties.Match('backoffLimit').Count -gt 0 -and $null -ne $job.spec.backoffLimit) {
+            $backoffLimit = [int]$job.spec.backoffLimit
+        }
+    }
+
     $active = 0
     $succeeded = 0
     $failed = 0
@@ -120,7 +127,17 @@ while ((Get-Date) -lt $timeoutAt) {
         if ($job.status.PSObject.Properties.Match('failed').Count -gt 0 -and $job.status.failed) { $failed = [int]$job.status.failed }
     }
 
-    $statusLine = "initializer job=$name active=$active succeeded=$succeeded failed=$failed"
+    $isFailed = $false
+    if ($job.PSObject.Properties.Match('status').Count -gt 0 -and $job.status -and $job.status.PSObject.Properties.Match('conditions').Count -gt 0 -and $job.status.conditions) {
+        foreach ($cond in @($job.status.conditions)) {
+            if ($cond -and $cond.type -eq 'Failed' -and $cond.status -eq 'True') {
+                $isFailed = $true
+                break
+            }
+        }
+    }
+
+    $statusLine = "initializer job=$name active=$active succeeded=$succeeded failed=$failed backoffLimit=$backoffLimit"
     if ($statusLine -ne $lastStatusLine) {
         Write-Host $statusLine
         $lastStatusLine = $statusLine
@@ -133,8 +150,10 @@ while ((Get-Date) -lt $timeoutAt) {
         break
     }
 
-    if ($failed -ge 1) {
-        Write-Host 'Initializer job failed. Capturing diagnostics...'
+    # Jobs can transiently fail and be retried (failed>=1) while still Running.
+    # Only fail when the Job is definitively Failed (condition=Failed) or when failed count exceeds backoffLimit.
+    if ($isFailed -or ($failed -gt $backoffLimit)) {
+        Write-Host 'Initializer job failed (final). Capturing diagnostics...'
         kubectl describe job -n $namespace $name | Out-Host
         kubectl logs -n $namespace job/$name --all-containers --tail=200 | Out-Host
         Fail 'Initializer job failed.'

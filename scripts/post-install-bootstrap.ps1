@@ -44,33 +44,82 @@ Write-Host 'Waiting for DefectDojo initializer job to complete (up to 20 minutes
 kubectl -n $namespace get jobs | Out-Host
 Assert-LastExitCode 'kubectl get jobs'
 
-$waitSelector = 'app.kubernetes.io/instance=defectdojo'
-kubectl -n $namespace wait --for=condition=complete job -l $waitSelector --timeout=20m | Out-Host
-if ($LASTEXITCODE -ne 0) {
-    Warn 'Initializer job did not complete successfully. Capturing diagnostics...'
-    try {
-        kubectl -n $namespace describe job -l $waitSelector | Out-Host
-    } catch {
-        Warn "Failed to describe jobs: $($_.Exception.Message)"
+$selector = 'defectdojo.org/component=initializer'
+$start = Get-Date
+$timeoutAt = $start.AddMinutes(20)
+$lastStatus = ''
+
+while ((Get-Date) -lt $timeoutAt) {
+    $jobJson = kubectl get job -n $namespace -l $selector -o json 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Fail 'kubectl get job for initializer selector failed.'
     }
 
-    try {
-        $jobName = kubectl -n $namespace get job -l 'defectdojo.org/component=initializer' -o jsonpath='{.items[0].metadata.name}' 2>$null
-        $jobName = ($jobName | Out-String).Trim()
-        if (-not $jobName) {
-            $jobName = kubectl -n $namespace get job -l $waitSelector -o jsonpath='{.items[0].metadata.name}' 2>$null
-            $jobName = ($jobName | Out-String).Trim()
-        }
-        if ($jobName) {
-            kubectl -n $namespace logs job/$jobName --all-containers --tail=200 | Out-Host
-        } else {
-            Warn 'Could not determine initializer job name for logs.'
-        }
-    } catch {
-        Warn "Failed to get initializer logs: $($_.Exception.Message)"
+    $jobs = $null
+    try { $jobs = $jobJson | ConvertFrom-Json } catch { Fail "Failed to parse initializer job JSON: $($_.Exception.Message)" }
+    $items = @($jobs.items)
+    if ($items.Count -eq 0) {
+        Start-Sleep -Seconds 5
+        continue
     }
 
-    Fail 'Initializer job failed or timed out.'
+    $job = $items | Sort-Object { $_.metadata.creationTimestamp } | Select-Object -Last 1
+    $name = $job.metadata.name
+
+    $backoffLimit = 6
+    if ($job.PSObject.Properties.Match('spec').Count -gt 0 -and $job.spec) {
+        if ($job.spec.PSObject.Properties.Match('backoffLimit').Count -gt 0 -and $null -ne $job.spec.backoffLimit) {
+            $backoffLimit = [int]$job.spec.backoffLimit
+        }
+    }
+
+    $active = 0
+    $succeeded = 0
+    $failed = 0
+    if ($job.PSObject.Properties.Match('status').Count -gt 0 -and $job.status) {
+        if ($job.status.PSObject.Properties.Match('active').Count -gt 0 -and $job.status.active) { $active = [int]$job.status.active }
+        if ($job.status.PSObject.Properties.Match('succeeded').Count -gt 0 -and $job.status.succeeded) { $succeeded = [int]$job.status.succeeded }
+        if ($job.status.PSObject.Properties.Match('failed').Count -gt 0 -and $job.status.failed) { $failed = [int]$job.status.failed }
+    }
+
+    $isFailed = $false
+    if ($job.PSObject.Properties.Match('status').Count -gt 0 -and $job.status -and $job.status.PSObject.Properties.Match('conditions').Count -gt 0 -and $job.status.conditions) {
+        foreach ($cond in @($job.status.conditions)) {
+            if ($cond -and $cond.type -eq 'Failed' -and $cond.status -eq 'True') { $isFailed = $true; break }
+        }
+    }
+
+    $status = "initializer job=$name active=$active succeeded=$succeeded failed=$failed backoffLimit=$backoffLimit"
+    if ($status -ne $lastStatus) {
+        Write-Host $status
+        $lastStatus = $status
+    } elseif (((Get-Date) - $start).TotalSeconds % 30 -lt 6) {
+        Write-Host $status
+    }
+
+    if ($succeeded -ge 1) {
+        Write-Host 'Initializer job completed.'
+        break
+    }
+
+    if ($isFailed -or ($failed -gt $backoffLimit)) {
+        Warn 'Initializer job failed (final). Capturing diagnostics...'
+        kubectl -n $namespace describe job $name | Out-Host
+        kubectl -n $namespace logs job/$name --all-containers --tail=200 | Out-Host
+        Fail 'Initializer job failed.'
+    }
+
+    Start-Sleep -Seconds 10
+}
+
+if ((Get-Date) -ge $timeoutAt) {
+    Warn 'Initializer job did not complete within 20 minutes. Capturing diagnostics...'
+    try { kubectl -n $namespace get events --sort-by=.lastTimestamp | Select-Object -Last 40 | Out-Host } catch {}
+    try {
+        $jobName = (kubectl -n $namespace get job -l $selector -o jsonpath='{.items[-1:].metadata.name}' 2>$null | Out-String).Trim()
+        if ($jobName) { kubectl -n $namespace logs job/$jobName --all-containers --tail=200 | Out-Host }
+    } catch {}
+    Fail 'Initializer job timed out.'
 }
 
 Write-Host "DefectDojo URL (from DD_HOST): $url"

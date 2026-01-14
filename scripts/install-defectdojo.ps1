@@ -83,29 +83,43 @@ function Invoke-PostgresSql([string]$Sql) {
     Assert-LastExitCode 'psql'
 }
 
-function Reset-DojoSystemSettingsIfEmpty() {
-    Write-Host 'Pre-flight: checking dojo_system_settings row count (workaround for upstream IndexError)...'
+function Reset-DatabaseIfSystemSettingsInvalid() {
+    Write-Host 'Pre-flight: validating system settings table state...'
+
+    $pgPod = 'defectdojo-postgresql-0'
+    $toRegclass = (& kubectl exec -n $namespace $pgPod -- bash -lc 'export PGPASSWORD="$(cat /opt/bitnami/postgresql/secrets/postgresql-password)"; /opt/bitnami/postgresql/bin/psql -U defectdojo -d defectdojo -At -c "SELECT to_regclass(''public.dojo_system_settings'');"' 2>$null | Out-String).Trim()
+
+    $systemSettingsMigrationCount = 0
     try {
-        Invoke-PostgresSql 'SELECT COUNT(*) AS cnt FROM dojo_system_settings;'
-    } catch {
-        Write-Host 'dojo_system_settings does not exist yet (ok).'
+        $migCnt = (& kubectl exec -n $namespace $pgPod -- bash -lc 'export PGPASSWORD="$(cat /opt/bitnami/postgresql/secrets/postgresql-password)"; /opt/bitnami/postgresql/bin/psql -U defectdojo -d defectdojo -At -c "SELECT COUNT(*) FROM django_migrations WHERE app=''dojo'' AND name ILIKE ''%system_settings%'';"' 2>$null | Out-String).Trim()
+        if ($migCnt -match '^[0-9]+$') { $systemSettingsMigrationCount = [int]$migCnt }
+    } catch {}
+
+    $rowCount = $null
+    if ($toRegclass) {
+        try {
+            $cntText = (& kubectl exec -n $namespace $pgPod -- bash -lc 'export PGPASSWORD="$(cat /opt/bitnami/postgresql/secrets/postgresql-password)"; /opt/bitnami/postgresql/bin/psql -U defectdojo -d defectdojo -At -c "SELECT COUNT(*) FROM dojo_system_settings;"' 2>$null | Out-String).Trim()
+            if ($cntText -match '^[0-9]+$') { $rowCount = [int]$cntText }
+        } catch {}
+    }
+
+    $inconsistent = $false
+    if (-not $toRegclass -and $systemSettingsMigrationCount -gt 0) {
+        Write-Host "Detected inconsistent DB: dojo_system_settings is missing but $systemSettingsMigrationCount system_settings migrations are already applied."
+        $inconsistent = $true
+    }
+    if ($toRegclass -and $null -ne $rowCount -and $rowCount -eq 0) {
+        Write-Host 'Detected inconsistent DB: dojo_system_settings exists but is empty (upstream initializer can crash; migrations may also break).'
+        $inconsistent = $true
+    }
+
+    if (-not $inconsistent) {
+        Write-Host 'System settings table looks consistent (no DB reset needed).'
         return
     }
 
-    # If table exists but is empty, drop it so the initializer pre-check does not crash.
-    # It will be recreated by migrations.
-    try {
-        $cnt = & kubectl exec -n $namespace defectdojo-postgresql-0 -- bash -lc 'export PGPASSWORD="$(cat /opt/bitnami/postgresql/secrets/postgresql-password)"; /opt/bitnami/postgresql/bin/psql -U defectdojo -d defectdojo -At -c "SELECT COUNT(*) FROM dojo_system_settings;"' 2>$null
-        $cntText = ($cnt | Out-String).Trim()
-        if ($cntText -eq '0') {
-            Write-Host 'dojo_system_settings exists but is empty; dropping table to avoid initializer crash...'
-            Invoke-PostgresSql 'DROP TABLE IF EXISTS dojo_system_settings CASCADE;'
-        } else {
-            Write-Host "dojo_system_settings row count: $cntText (no action)."
-        }
-    } catch {
-        Write-Host 'Could not determine dojo_system_settings count; continuing.'
-    }
+    Write-Warning 'Resetting PostgreSQL public schema to recover from inconsistent DefectDojo migration state (DESTRUCTIVE).'
+    Invoke-PostgresSql "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO defectdojo; GRANT ALL ON SCHEMA public TO public;"
 }
 
 function Run-BootstrapJobAndWait() {
@@ -253,7 +267,7 @@ spec:
     Fail 'Bootstrap job timed out.'
 }
 
-Reset-DojoSystemSettingsIfEmpty
+Reset-DatabaseIfSystemSettingsInvalid
 Run-BootstrapJobAndWait
 
 Write-Host 'Waiting for deployments to become ready (rollout status)...'

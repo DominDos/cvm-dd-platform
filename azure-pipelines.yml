@@ -120,10 +120,18 @@ stages:
                 $chartRef = 'defectdojo/defectdojo'
                 $chartVersion = "$(DD_CHART_VERSION)"
 
+                $chartDir = Join-Path $env:Agent_TempDirectory "dd-chart-$chartVersion"
+                if (Test-Path -LiteralPath $chartDir) {
+                  Remove-Item -Recurse -Force -LiteralPath $chartDir
+                }
+
                 helm repo add $repoName $repoUrl --force-update | Out-Host
                 helm repo update | Out-Host
 
-                helm lint $chartRef --version $chartVersion -f k8s/defectdojo-values.yaml --set host="$(DD_HOST)" | Out-Host
+                helm pull $chartRef --version $chartVersion --untar --untardir $chartDir | Out-Host
+                $localChartPath = Join-Path $chartDir 'defectdojo'
+
+                helm lint $localChartPath -f k8s/defectdojo-values.yaml --set host="$(DD_HOST)" | Out-Host
 
   - stage: Deploy
     displayName: Deploy (main)

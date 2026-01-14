@@ -13,12 +13,6 @@ pool:
 
 variables:
   - group: VG-DEFECTDOJO-SECRETS
-  - name: AZURE_SERVICE_CONNECTION
-    value: ''
-  - name: AKS_RG
-    value: ''
-  - name: AKS_NAME
-    value: ''
   - name: DD_SCHEME
     value: 'http'
   - name: DD_CHART_VERSION

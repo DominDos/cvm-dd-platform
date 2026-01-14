@@ -43,8 +43,13 @@ try {
 
 if (-not $externalOk) {
     Write-Host 'Running in-cluster smoke test (fallback)...'
+    $podName = 'dd-smoke'
     try {
-        $code = kubectl -n $namespace run dd-smoke --image=curlimages/curl:8.5.0 --restart=Never --rm -i -- curl -s -o /dev/null -w "%{http_code}" http://defectdojo-django:8080/login
+        kubectl -n $namespace delete pod $podName --ignore-not-found=true --wait=false 2>$null | Out-Null
+        kubectl -n $namespace run $podName --image=curlimages/curl:8.5.0 --restart=Never --command -- sleep 3600 | Out-Host
+        kubectl -n $namespace wait --for=condition=Ready pod/$podName --timeout=120s | Out-Host
+
+        $code = kubectl -n $namespace exec $podName -- curl -s -o /dev/null -w "%{http_code}" http://defectdojo-django:8080/login
         $codeText = ($code | Out-String).Trim()
         Write-Host "In-cluster smoke HTTP code: $codeText"
 
@@ -53,6 +58,8 @@ if (-not $externalOk) {
         }
     } catch {
         Warn "In-cluster smoke test failed: $($_.Exception.Message)"
+    } finally {
+        kubectl -n $namespace delete pod $podName --ignore-not-found=true --wait=false 2>$null | Out-Null
     }
 }
 

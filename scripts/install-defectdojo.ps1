@@ -6,6 +6,12 @@ function Fail([string]$Message) {
     exit 1
 }
 
+function Assert-LastExitCode([string]$What) {
+    if ($LASTEXITCODE -ne 0) {
+        Fail "$What failed with exit code $LASTEXITCODE."
+    }
+}
+
 $namespace = 'defectdojo'
 $releaseName = 'defectdojo'
 $repoName = 'defectdojo'
@@ -19,11 +25,14 @@ Write-Host "Ensuring namespace '$namespace' exists..."
 $ns = kubectl get ns $namespace -o name 2>$null
 if (-not $ns) {
     kubectl create ns $namespace | Out-Host
+    Assert-LastExitCode "kubectl create ns $namespace"
 }
 
 Write-Host "Adding Helm repo '$repoName'..."
 helm repo add $repoName $repoUrl --force-update | Out-Host
+Assert-LastExitCode 'helm repo add'
 helm repo update | Out-Host
+Assert-LastExitCode 'helm repo update'
 
 # The chart recommends creating certain secrets only on first install.
 # We make the install/upgrade idempotent by detecting whether secrets already exist.
@@ -48,10 +57,16 @@ helm upgrade --install $releaseName $chartRef --version $chartVersion --namespac
   --set createSecret=$createSecret `
   --set createValkeySecret=$createValkeySecret `
   --set createPostgresqlSecret=$createPostgresqlSecret | Out-Host
+Assert-LastExitCode 'helm upgrade --install'
 
 Write-Host 'Waiting for deployments to become ready (rollout status)...'
 $deployments = kubectl get deploy -n $namespace -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
-$deploymentList = $deployments -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+Assert-LastExitCode "kubectl get deploy -n $namespace"
+
+$deploymentList = @(
+    $deployments -split "`n" |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+)
 
 if ($deploymentList.Count -eq 0) {
     Fail "No deployments found in namespace '$namespace' after Helm install."
@@ -60,4 +75,5 @@ if ($deploymentList.Count -eq 0) {
 foreach ($deployment in $deploymentList) {
     Write-Host "- kubectl rollout status deployment/$deployment"
     kubectl rollout status deployment/$deployment -n $namespace --timeout=10m | Out-Host
+    Assert-LastExitCode "kubectl rollout status deployment/$deployment"
 }

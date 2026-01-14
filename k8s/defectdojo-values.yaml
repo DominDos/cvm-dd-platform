@@ -12,6 +12,22 @@ django:
     ingressClassName: nginx
     activateTLS: false
 
+  # Persist uploaded media (PoC size). For AKS default storage class, ReadWriteOnce is safest.
+  mediaPersistentVolume:
+    enabled: true
+    type: pvc
+    persistentVolumeClaim:
+      create: true
+      size: 10Gi
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: ""
+
+# Inject additional environment variables into the Django + Celery containers.
+extraEnv:
+  - name: DD_ENABLE_AUDITLOG
+    value: "False"
+
 # Chart-managed in-cluster PostgreSQL (bitnami/postgresql)
 postgresql:
   enabled: true
@@ -24,13 +40,8 @@ postgresql:
 valkey:
   enabled: true
 
-# Persist uploaded media (PoC size). For AKS default storage class, ReadWriteOnce is safest.
-  mediaPersistentVolume:
-    enabled: true
-    type: pvc
-    persistentVolumeClaim:
-      create: true
-      size: 10Gi
-      accessModes:
-        - ReadWriteOnce
-      storageClassName: ""
+# The initializer Job does not inherit global extraEnv; set it explicitly.
+initializer:
+  extraEnv:
+    - name: DD_ENABLE_AUDITLOG
+      value: "False"

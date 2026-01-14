@@ -12,6 +12,24 @@ django:
     ingressClassName: nginx
     activateTLS: false
 
+  uwsgi:
+    resources:
+      requests:
+        cpu: 25m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+
+  nginx:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
   # Persist uploaded media (PoC size). For AKS default storage class, ReadWriteOnce is safest.
   mediaPersistentVolume:
     enabled: true
@@ -28,6 +46,16 @@ extraEnv:
   - name: DD_ENABLE_AUDITLOG
     value: "False"
 
+# Reduce resource requests to fit in small (1-node) AKS clusters.
+dbMigrationChecker:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
 # Chart-managed in-cluster PostgreSQL (bitnami/postgresql)
 postgresql:
   enabled: true
@@ -42,6 +70,31 @@ valkey:
 
 # The initializer Job does not inherit global extraEnv; set it explicitly.
 initializer:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
   extraEnv:
     - name: DD_ENABLE_AUDITLOG
       value: "False"
+
+celery:
+  beat:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  worker:
+    resources:
+      requests:
+        cpu: 25m
+        memory: 128Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi

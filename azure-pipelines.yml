@@ -1,0 +1,103 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  name: Default
+
+variables:
+  - name: AZURE_SERVICE_CONNECTION
+    value: ''
+  - name: AKS_RG
+    value: ''
+  - name: AKS_NAME
+    value: ''
+  - name: DD_HOST
+    value: 'defectdojo.local'
+
+stages:
+  - stage: Validate
+    displayName: Validate
+    jobs:
+      - job: Validate
+        displayName: Lint and basic checks
+        steps:
+          - checkout: self
+
+          - task: PowerShell@2
+            displayName: Verify required files exist
+            inputs:
+              targetType: inline
+              pwsh: true
+              script: |
+                $ErrorActionPreference = 'Stop'
+
+                $required = @(
+                  'azure-pipelines.yml',
+                  'k8s/defectdojo-values.yaml',
+                  'scripts/aks-login.ps1',
+                  'scripts/install-defectdojo.ps1',
+                  'scripts/post-install-bootstrap.ps1',
+                  'README.md'
+                )
+
+                foreach ($path in $required) {
+                  if (-not (Test-Path -LiteralPath $path)) {
+                    throw "Missing required file: $path"
+                  }
+                }
+
+                Write-Host 'All required files are present.'
+
+          - task: PowerShell@2
+            displayName: Helm lint (no cluster)
+            inputs:
+              targetType: inline
+              pwsh: true
+              script: |
+                $ErrorActionPreference = 'Stop'
+
+                $repoName = 'defectdojo'
+                $repoUrl = 'https://raw.githubusercontent.com/DefectDojo/django-DefectDojo/helm-charts'
+                $chartRef = 'defectdojo/defectdojo'
+                $chartVersion = '1.9.7'
+
+                helm repo add $repoName $repoUrl --force-update | Out-Host
+                helm repo update | Out-Host
+
+                helm lint $chartRef --version $chartVersion -f k8s/defectdojo-values.yaml --set host="$(DD_HOST)" | Out-Host
+
+  - stage: Deploy
+    displayName: Deploy (main)
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: Deploy
+        displayName: Deploy DefectDojo
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: Login to Azure, deploy to AKS
+            name: deploy_defectdojo
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: ps
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+
+                # Expose pipeline variables to the PowerShell scripts as environment variables.
+                $env:AKS_RG = "$(AKS_RG)"
+                $env:AKS_NAME = "$(AKS_NAME)"
+                $env:DD_HOST = "$(DD_HOST)"
+
+                pwsh -NoProfile -File "$(System.DefaultWorkingDirectory)\scripts\aks-login.ps1"
+                pwsh -NoProfile -File "$(System.DefaultWorkingDirectory)\scripts\install-defectdojo.ps1"
+                pwsh -NoProfile -File "$(System.DefaultWorkingDirectory)\scripts\post-install-bootstrap.ps1"

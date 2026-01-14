@@ -1,0 +1,36 @@
+# PoC-friendly defaults for DefectDojo on AKS.
+# The pipeline overrides the hostname via --set host=$env:DD_HOST.
+
+# Primary hostname used by Django/allowed hosts.
+host: defectdojo.local
+
+django:
+  # Ingress
+  # NOTE: the chart's ingress is under django.ingress.*
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    activateTLS: false
+
+# Chart-managed in-cluster PostgreSQL (bitnami/postgresql)
+postgresql:
+  enabled: true
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+
+# Chart-managed in-cluster Redis-compatible broker (valkey)
+valkey:
+  enabled: true
+
+# Persist uploaded media (PoC size). For AKS default storage class, ReadWriteOnce is safest.
+  mediaPersistentVolume:
+    enabled: true
+    type: pvc
+    persistentVolumeClaim:
+      create: true
+      size: 10Gi
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: ""

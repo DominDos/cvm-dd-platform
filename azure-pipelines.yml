@@ -12,12 +12,17 @@ pool:
   name: Default
 
 variables:
+  - group: VG-DEFECTDOJO-SECRETS
   - name: AZURE_SERVICE_CONNECTION
     value: ''
   - name: AKS_RG
     value: ''
   - name: AKS_NAME
     value: ''
+  - name: DD_SCHEME
+    value: 'http'
+  - name: DD_CHART_VERSION
+    value: '1.9.5'
   - name: DD_HOST
     value: 'defectdojo.local'
 
@@ -66,7 +71,7 @@ stages:
                 $repoName = 'defectdojo'
                 $repoUrl = 'https://raw.githubusercontent.com/DefectDojo/django-DefectDojo/helm-charts'
                 $chartRef = 'defectdojo/defectdojo'
-                $chartVersion = '1.9.7'
+                $chartVersion = "$(DD_CHART_VERSION)"
 
                 helm repo add $repoName $repoUrl --force-update | Out-Host
                 helm repo update | Out-Host
@@ -93,10 +98,22 @@ stages:
               inlineScript: |
                 $ErrorActionPreference = 'Stop'
 
+                Write-Host 'Tooling versions (self-hosted agent):'
+                az version
+                kubectl version --client
+                helm version
+
                 # Expose pipeline variables to the PowerShell scripts as environment variables.
                 $env:AKS_RG = "$(AKS_RG)"
                 $env:AKS_NAME = "$(AKS_NAME)"
                 $env:DD_HOST = "$(DD_HOST)"
+                $env:DD_SCHEME = "$(DD_SCHEME)"
+
+                Write-Host 'Helm repo diagnostics (before install):'
+                helm repo list | Out-Host
+                helm repo add defectdojo 'https://raw.githubusercontent.com/DefectDojo/django-DefectDojo/helm-charts' --force-update | Out-Host
+                helm repo update | Out-Host
+                helm search repo defectdojo/defectdojo --versions | Select-Object -First 10 | Out-Host
 
                 pwsh -NoProfile -File "$(System.DefaultWorkingDirectory)\scripts\aks-login.ps1"
                 pwsh -NoProfile -File "$(System.DefaultWorkingDirectory)\scripts\install-defectdojo.ps1"

@@ -6,8 +6,10 @@ function Fail([string]$Message) { Write-Error $Message; exit 1 }
 
 if ([string]::IsNullOrWhiteSpace($env:DD_HOST)) { Fail 'Missing required env var: DD_HOST' }
 
+$scheme = if ([string]::IsNullOrWhiteSpace($env:DD_SCHEME)) { 'http' } else { $env:DD_SCHEME }
+
 $namespace = 'defectdojo'
-$url = "http://$($env:DD_HOST)"
+$url = "$scheme://$($env:DD_HOST)"
 
 Write-Host "DefectDojo URL (from DD_HOST): $url"
 
@@ -29,12 +31,29 @@ if ($LASTEXITCODE -eq 0 -and $ingJson) {
     }
 }
 
-Write-Host 'Checking whether the UI is reachable (best-effort)...'
+Write-Host 'Checking whether the UI is reachable (best-effort, external)...'
+$externalOk = $false
 try {
     $resp = Invoke-WebRequest -Uri $url -Method Get -TimeoutSec 15 -UseBasicParsing
     Write-Host "UI HTTP status: $($resp.StatusCode)"
+    $externalOk = $true
 } catch {
     Warn "UI check failed from agent (DNS/LB may not be ready): $($_.Exception.Message)"
+}
+
+if (-not $externalOk) {
+    Write-Host 'Running in-cluster smoke test (fallback)...'
+    try {
+        $code = kubectl -n $namespace run dd-smoke --image=curlimages/curl:8.5.0 --restart=Never --rm -i -- curl -s -o /dev/null -w "%{http_code}" http://defectdojo-django:8080/login
+        $codeText = ($code | Out-String).Trim()
+        Write-Host "In-cluster smoke HTTP code: $codeText"
+
+        if ($codeText -ne '200' -and $codeText -ne '302') {
+            Warn "In-cluster smoke test returned unexpected HTTP code '$codeText' (expected 200 or 302)."
+        }
+    } catch {
+        Warn "In-cluster smoke test failed: $($_.Exception.Message)"
+    }
 }
 
 # Attempt API token bootstrap using the admin password from the chart-managed secret.
@@ -52,7 +71,7 @@ try {
 
 if (-not $adminPassword) {
     Warn "Admin password not available (or secret missing). Create an API token manually in the UI: $url -> User menu -> API v2 Key."
-    Write-Host '##vso[task.setvariable variable=DD_API_TOKEN;isOutput=true]'
+    Write-Host '##vso[task.setvariable variable=DD_API_TOKEN;isOutput=true;issecret=true]'
     exit 0
 }
 
@@ -65,9 +84,9 @@ try {
     }
 
     Write-Host 'Successfully obtained DefectDojo API token (stored as pipeline output variable DD_API_TOKEN).'
-    Write-Host "##vso[task.setvariable variable=DD_API_TOKEN;isOutput=true]$token"
+    Write-Host "##vso[task.setvariable variable=DD_API_TOKEN;isOutput=true;issecret=true]$token"
 } catch {
     Warn "Automatic API token bootstrap failed: $($_.Exception.Message)"
     Warn "Create an API token manually in the UI: $url -> User menu -> API v2 Key. Then store it as a secret variable/group named DD_API_TOKEN for downstream pipelines."
-    Write-Host '##vso[task.setvariable variable=DD_API_TOKEN;isOutput=true]'
+    Write-Host '##vso[task.setvariable variable=DD_API_TOKEN;isOutput=true;issecret=true]'
 }

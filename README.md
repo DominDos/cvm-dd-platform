@@ -29,7 +29,7 @@ Pipeline file: `azure-pipelines.yml`
 - Namespace: `defectdojo`
 - Helm chart repo: `https://raw.githubusercontent.com/DefectDojo/django-DefectDojo/helm-charts`
 - Chart: `defectdojo/defectdojo`
-- Pinned chart version: `1.9.7`
+- Pinned chart version: `1.9.5`
 - In-cluster dependencies: **PostgreSQL** and **Valkey (Redis-compatible)** via chart dependencies
 - Persistence:
   - PostgreSQL PVC: `10Gi`
@@ -38,6 +38,12 @@ Pipeline file: `azure-pipelines.yml`
   - class: `nginx`
   - host: `DD_HOST`
   - TLS: disabled (PoC)
+
+## Lessons learned (stability)
+
+- If you see intermittent `503 Service Temporarily Unavailable (nginx)` on pages like `/change_password`, check `kubectl describe pod -n defectdojo -l defectdojo.org/component=django`.
+- If `uwsgi` shows `OOMKilled` or `CrashLoopBackOff`, increase `django.uwsgi.resources` (this repo defaults to `512Mi` request / `1Gi` limit in `k8s/defectdojo-values.yaml`).
+- Probes are patched by `scripts/install-defectdojo.ps1` to avoid flapping under load (uWSGI `tcpSocket` probes, nginx readiness self-check).
 
 ## DD API token (PoC)
 

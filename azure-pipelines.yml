@@ -157,6 +157,9 @@ stages:
               inlineScript: |
                 $ErrorActionPreference = 'Stop'
 
+                # Ensure scripts run from repo root (they use relative paths like k8s/defectdojo-values.yaml).
+                Set-Location "$(System.DefaultWorkingDirectory)"
+
                 function Find-Exe([string]$name, [string[]]$candidates) {
                   $cmd = Get-Command $name -ErrorAction SilentlyContinue
                   if ($cmd) { return $cmd.Source }
@@ -211,12 +214,6 @@ stages:
                 Require-PipelineVar 'AKS_RG' $env:AKS_RG
                 Require-PipelineVar 'AKS_NAME' $env:AKS_NAME
                 Require-PipelineVar 'DD_HOST' $env:DD_HOST
-
-                Write-Host 'Helm repo diagnostics (before install):'
-                helm repo list | Out-Host
-                helm repo add defectdojo 'https://raw.githubusercontent.com/DefectDojo/django-DefectDojo/helm-charts' --force-update | Out-Host
-                helm repo update | Out-Host
-                helm search repo defectdojo/defectdojo --versions | Select-Object -First 10 | Out-Host
 
                 pwsh -NoProfile -File "$(System.DefaultWorkingDirectory)\scripts\aks-login.ps1"
                 pwsh -NoProfile -File "$(System.DefaultWorkingDirectory)\scripts\install-defectdojo.ps1"

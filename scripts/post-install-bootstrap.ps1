@@ -164,6 +164,42 @@ if ($selector -and ((Get-Date) -ge $timeoutAt)) {
 Write-Host "DefectDojo URL (from DD_HOST): $url"
 
 Write-Host 'Determining ingress controller external address (ingress-nginx)...'
+$svcExists = $false
+try {
+    $null = kubectl -n ingress-nginx get svc ingress-nginx-controller 2>$null
+    $svcExists = $LASTEXITCODE -eq 0
+} catch {}
+
+if ($svcExists) {
+    # On AKS, the Azure Load Balancer health probe defaults to GET / on the nodePort.
+    # ingress-nginx returns 404 on / by default, which can mark all backends unhealthy and make the public IP look unreachable.
+    # Force the probe to use /healthz (200).
+    try {
+        kubectl -n ingress-nginx annotate svc ingress-nginx-controller `
+            service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path='/healthz' --overwrite | Out-Null
+    } catch {
+        Warn "Failed to annotate ingress-nginx-controller health probe path: $($_.Exception.Message)"
+    }
+
+    # Optional: restrict ingress to specific client CIDRs (comma-separated), e.g. '78.80.81.243/32,168.63.129.16/32'.
+    if (-not [string]::IsNullOrWhiteSpace($env:INGRESS_SOURCE_RANGES)) {
+        $ranges = @(
+            $env:INGRESS_SOURCE_RANGES.Split(',') |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+
+        if ($ranges.Count -gt 0) {
+            $patchObj = @{ spec = @{ loadBalancerSourceRanges = $ranges } } | ConvertTo-Json -Depth 6 -Compress
+            try {
+                kubectl -n ingress-nginx patch svc ingress-nginx-controller --type merge -p $patchObj | Out-Null
+            } catch {
+                Warn "Failed to patch ingress-nginx-controller loadBalancerSourceRanges: $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
 $lbIp = (kubectl -n ingress-nginx get svc ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>$null | Out-String).Trim()
 if (-not $lbIp) {
     $lbIp = (kubectl -n ingress-nginx get svc ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>$null | Out-String).Trim()

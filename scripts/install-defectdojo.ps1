@@ -69,6 +69,68 @@ Write-Host ('Running: helm ' + ($helmArgs -join ' '))
 & helm @helmArgs | Out-Host
 Assert-LastExitCode 'helm upgrade --install'
 
+function Patch-WorkloadStability() {
+    Write-Host 'Patching DefectDojo workloads for stability (db-migration-checker resources + Django probes)...'
+
+    $initPatch = @'
+{"spec":{"template":{"spec":{"initContainers":[{"name":"db-migration-checker","resources":{"requests":{"cpu":"10m","memory":"256Mi"},"limits":{"cpu":"200m","memory":"512Mi"}}}]}}}}
+'@
+
+    foreach ($d in @('defectdojo-django', 'defectdojo-celery-worker', 'defectdojo-celery-beat')) {
+        kubectl -n $namespace patch deploy $d --type='strategic' -p $initPatch | Out-Null
+        if ($LASTEXITCODE -ne 0) { Fail "kubectl patch deploy/$d (init container resources) failed." }
+    }
+
+        # Probes: keep them lightweight to avoid flapping during high load.
+        # - uWSGI: use tcpSocket probes (avoid slow HTTP endpoints)
+        # - nginx: readiness should only check nginx itself (not upstream uWSGI)
+        # - remove nginx startupProbe (it can cause unnecessary restarts when uWSGI is briefly unavailable)
+        $djangoProbeJsonPatch = @'
+[
+    {"op":"replace","path":"/spec/template/spec/containers/0/resources","value":{
+        "requests":{"cpu":"25m","memory":"512Mi"},
+        "limits":{"cpu":"1","memory":"1Gi"}
+    }},
+    {"op":"replace","path":"/spec/template/spec/containers/0/livenessProbe","value":{
+        "tcpSocket":{"port":8081},
+        "initialDelaySeconds":120,
+        "timeoutSeconds":2,
+        "periodSeconds":20,
+        "successThreshold":1,
+        "failureThreshold":6
+    }},
+    {"op":"add","path":"/spec/template/spec/containers/0/readinessProbe","value":{
+        "tcpSocket":{"port":8081},
+        "initialDelaySeconds":10,
+        "timeoutSeconds":2,
+        "periodSeconds":10,
+        "successThreshold":1,
+        "failureThreshold":3
+    }},
+    {"op":"add","path":"/spec/template/spec/containers/0/startupProbe","value":{
+        "tcpSocket":{"port":8081},
+        "initialDelaySeconds":30,
+        "timeoutSeconds":2,
+        "periodSeconds":10,
+        "successThreshold":1,
+        "failureThreshold":30
+    }},
+    {"op":"replace","path":"/spec/template/spec/containers/1/readinessProbe","value":{
+        "httpGet":{"path":"/nginx_health","port":"http","scheme":"HTTP","httpHeaders":[{"name":"Host","value":"defectdojo.local"}]},
+        "initialDelaySeconds":10,
+        "timeoutSeconds":2,
+        "periodSeconds":10,
+        "successThreshold":1,
+        "failureThreshold":3
+    }},
+    {"op":"remove","path":"/spec/template/spec/containers/1/startupProbe"}
+]
+'@
+
+        kubectl -n $namespace patch deploy defectdojo-django --type='json' -p $djangoProbeJsonPatch | Out-Null
+        if ($LASTEXITCODE -ne 0) { Fail 'kubectl patch deploy/defectdojo-django (probes) failed.' }
+}
+
 function Invoke-PostgresSql([string]$Sql) {
     $pgPod = 'defectdojo-postgresql-0'
     $cmd = @(
@@ -270,6 +332,8 @@ spec:
 Reset-DatabaseIfSystemSettingsInvalid
 Run-BootstrapJobAndWait
 
+Patch-WorkloadStability
+
 Write-Host 'Waiting for deployments to become ready (rollout status)...'
 $deployments = kubectl get deploy -n $namespace -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
 Assert-LastExitCode "kubectl get deploy -n $namespace"
@@ -285,6 +349,10 @@ if ($deploymentList.Count -eq 0) {
 
 foreach ($deployment in $deploymentList) {
     Write-Host "- kubectl rollout status deployment/$deployment"
-    kubectl rollout status deployment/$deployment -n $namespace --timeout=20m | Out-Host
-    Assert-LastExitCode "kubectl rollout status deployment/$deployment"
+    kubectl rollout status deployment/$deployment -n $namespace --timeout=20m --watch=true | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "kubectl rollout status deployment/$deployment returned exit code $LASTEXITCODE. Falling back to kubectl wait..."
+        kubectl wait -n $namespace --for=condition=Available deployment/$deployment --timeout=20m | Out-Host
+        Assert-LastExitCode "kubectl wait deployment/$deployment"
+    }
 }

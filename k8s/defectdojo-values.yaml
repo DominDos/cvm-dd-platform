@@ -16,10 +16,10 @@ django:
     resources:
       requests:
         cpu: 25m
-        memory: 256Mi
+        memory: 512Mi
       limits:
         cpu: 1000m
-        memory: 512Mi
+        memory: 1Gi
 
   nginx:
     resources:
@@ -51,10 +51,10 @@ dbMigrationChecker:
   resources:
     requests:
       cpu: 10m
-      memory: 64Mi
+      memory: 256Mi
     limits:
       cpu: 200m
-      memory: 128Mi
+      memory: 512Mi
 
 # Chart-managed in-cluster PostgreSQL (bitnami/postgresql)
 postgresql:
@@ -77,7 +77,7 @@ initializer:
   resources:
     requests:
       cpu: 25m
-      memory: 128Mi
+      memory: 256Mi
     limits:
       cpu: 500m
       memory: 512Mi

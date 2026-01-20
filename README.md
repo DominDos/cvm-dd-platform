@@ -67,7 +67,7 @@ If the agent cannot reach `DD_HOST` yet (DNS/LB still provisioning), the script 
 - Create an API v2 token (user menu)
 - Store it in Azure DevOps as a **secret variable** (or variable group) named `DD_API_TOKEN` for downstream use
 
-## Downstream import (Centralni vulnerability management)
+## Downstream import (Central vulnerability management)
 
 Downstream app pipelines that import findings should use the DefectDojo API token:
 
